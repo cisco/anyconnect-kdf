@@ -1,0 +1,33 @@
+Cisco AnyConnect Linux Kernel Module
+(ac_kdf.ko)
+
+contact: <ac-nvm-admins@cisco.com>
+--------------------------------------------------------------------------
+Introduction:
+This kernel module intercepts network packets at layer 3, using Netfilter, and performs the following:
+    1. Extracts meta data information of the packets to track unique flows (both TCP and UDP) and send
+        that information to a userland process
+    2. Captures the DNS responses and send them to a userland process
+
+Interfaces:
+This kernel modules has 2 interfaces for userland processes to communicate
+    1. A Netlink socket to pass control messages to the module
+    2. A UDP socket for the module to pass data to the userland process
+
+--------------------------------------------------------------------------
+Procedure to build:
+
+In order to build the module, follow the steps below:
+
+    $ make
+
+--------------------------------------------------------------------------
+Procedure to build and run tests:
+
+In order to build the test app, follow the steps below:
+
+    $ cd test
+    $ make
+
+The ./kdf_listener -h provides usage instructions
+-------------------------------------------------------------------------
