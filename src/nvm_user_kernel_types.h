@@ -70,6 +70,7 @@ struct nvm_io_ctrl {
  * data that is passed for each unique flow to the userspace application*/
 
 #define APPFLOW_FILE_NAME_LEN           260
+#define APPFLOW_FILE_PATH_LEN           2048
 #define NVM_APPFLOW_VERSION             1
 #define NVM_FLOW_DIRECTION_UNKNOWN      0
 #define NVM_FLOW_DIRECTION_IN           1
@@ -84,6 +85,7 @@ enum flow_report_stage {
 
 /* NVM message types - messages sent to user space*/
 #define NVM_MESSAGE_APPFLOW_DATA  1
+#define NVM_MESSAGE_PID_INFO  2
 
 struct nvm_message_header {
 	uint16_t length;
@@ -108,12 +110,32 @@ struct app_flow {
 	uint32_t end_time;	/* time when socket was closed */
 
 	uint16_t file_name_len;
+	uint16_t file_path_len;
 	char file_name[APPFLOW_FILE_NAME_LEN];	/* null terminated image name*/
+	char file_path[APPFLOW_FILE_PATH_LEN];	/* null terminated image path*/
 	uint16_t parent_file_name_len;
+	uint16_t parent_file_path_len;
 	char parent_file_name[APPFLOW_FILE_NAME_LEN];
+	char parent_file_path[APPFLOW_FILE_PATH_LEN];
 	uint8_t direction;
 
 	enum flow_report_stage stage;
+};
+
+struct nvm_pid_info {
+    struct nvm_message_header header;
+    uint32_t pid;
+    uint32_t parent_pid;
+
+    uint16_t file_name_len;
+    uint16_t file_path_len;
+    char file_name[APPFLOW_FILE_NAME_LEN];	/* null terminated image name*/
+    char file_path[APPFLOW_FILE_PATH_LEN];	/* null terminated image path*/
+    uint16_t parent_file_name_len;
+    uint16_t parent_file_path_len;
+    char parent_file_name[APPFLOW_FILE_NAME_LEN];
+    char parent_file_path[APPFLOW_FILE_PATH_LEN];
+
 };
 
 #endif				/* __NVM_USER_KERNEL_TYPES_H__ */

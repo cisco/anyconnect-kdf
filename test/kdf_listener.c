@@ -143,10 +143,16 @@ static int bind_udp(const unsigned short port)
 	return sock;
 }
 
+typedef union kdf_flow{
+	struct nvm_message_header header;
+	struct nvm_pid_info pid_info;
+	struct app_flow flow;
+} kdf_flow_t;
+
 static void enable_nvm(const int sock, const unsigned short port)
 {
 	int in_sock = -1;
-	struct app_flow flow;
+	kdf_flow_t kdf_flow_obj;
 	unsigned short msg_count = 0;
 	struct {
 		struct nvm_io_ctrl cmd;
@@ -169,10 +175,16 @@ static void enable_nvm(const int sock, const unsigned short port)
 	/*Listen for incoming flows*/
 	printf ("Waiting for %d incoming flows\n", nmessages);
 	while (msg_count < nmessages) {
-		msg_count++;
-		memset(&flow, 0, sizeof(flow));
-		recv(in_sock, &flow, sizeof(flow), 0);
-		printf("Flow no. %d -- Process(pid): %s(%u), parent(pid): %s(%u), protocol: %s , family IPv%d, bytes sent: %lu, bytes received: %lu, flow state = %s\n", msg_count, flow.file_name, flow.pid, flow.parent_file_name, flow.parent_pid, (IPPROTO_TCP == flow.proto ? "TCP" : "UDP"), (AF_INET6 == flow.family ? 6 : 4), flow.in_bytes, flow.out_bytes, (0 == flow.stage ? "Started" : (1 == flow.stage ? "Periodic report" : "Ended")));
+		memset(&kdf_flow_obj, 0, sizeof(&kdf_flow_obj));
+		recv(in_sock, &kdf_flow_obj, sizeof(kdf_flow_obj), 0);
+		if ( NVM_MESSAGE_APPFLOW_DATA == kdf_flow_obj.header.type ) {
+			msg_count++;
+			printf("Flow no. %d -- flow size: %d, Process(pid):  %s(%u),file path(pid): %s(%u), parent(pid): %s(%u), parent file path(pid): %s(%u), protocol: %s , family IPv%d, bytes sent: %lu, bytes received: %lu, flow state = %s\n", msg_count, sizeof(struct app_flow), kdf_flow_obj.flow.file_name, kdf_flow_obj.flow.pid, kdf_flow_obj.flow.file_path, kdf_flow_obj.flow.pid, kdf_flow_obj.flow.parent_file_name, kdf_flow_obj.flow.parent_pid, kdf_flow_obj.flow.parent_file_path, kdf_flow_obj.flow.parent_pid, (IPPROTO_TCP == kdf_flow_obj.flow.proto ? "TCP" : "UDP"), (AF_INET6 == kdf_flow_obj.flow.family ? 6 : 4), kdf_flow_obj.flow.in_bytes, kdf_flow_obj.flow.out_bytes, (0 == kdf_flow_obj.flow.stage ? "Started" : (1 == kdf_flow_obj.flow.stage ? "Periodic report" : "Ended")));
+		}
+		else if ( NVM_MESSAGE_PID_INFO == kdf_flow_obj.header.type ) {
+			// NVM_MESSAGE_PID_INFO is being sent for every flow start. Its not actual flow data. So ignoring while counting flows.
+			printf("OnFlowStart -- flow size: %d, Process(pid):  %s(%u),file path(pid): %s(%u), parent(pid): %s(%u), parent file path(pid): %s(%u)\n", sizeof(struct nvm_pid_info), kdf_flow_obj.pid_info.file_name, kdf_flow_obj.pid_info.pid, kdf_flow_obj.pid_info.file_path, kdf_flow_obj.pid_info.pid, kdf_flow_obj.pid_info.parent_file_name, kdf_flow_obj.pid_info.parent_pid, kdf_flow_obj.pid_info.parent_file_path, kdf_flow_obj.pid_info.parent_pid );
+		}
 	}
 	close(in_sock);
 }

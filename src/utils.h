@@ -32,6 +32,8 @@
 #include <linux/version.h>
 #include <linux/hashtable.h>
 
+extern const char *default_name;
+
 /*
  * Task methods
  */

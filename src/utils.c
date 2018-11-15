@@ -28,14 +28,20 @@
 #include <linux/sched.h>
 #include <linux/fs.h>
 #include <linux/file.h>
-#include <linux/mm.h>
 #include <linux/time.h>
 #include <linux/slab.h>
 #include "defines.h"
 #include "utils.h"
 #include "dbgout.h"
 
-static const char default_name[] = "Unknown";	/*default task name */
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0))
+#include <linux/sched/task.h>
+#include <linux/sched/mm.h>
+#else
+#include <linux/mm.h>
+#endif
+
+const char *default_name = "Unknown";	/*default task name */
 
 /*
 *   \brief Get the current task_struct
@@ -127,7 +133,8 @@ uint16_t GetExePathFromTaskGeneric(struct task_struct *task, char *path_buffer,
 	if (NULL != mem_mgr && !bCurrent)
 		mmput(mem_mgr);
 
-	retval = snprintf(path_buffer, (buffer_size - 1), path);
+	snprintf(path_buffer, buffer_size, "%s", path);
+	retval = strlen(path_buffer);
 	if (NULL != temp_buffer)
 		KFREE(temp_buffer);
 
@@ -170,20 +177,16 @@ uint32_t get_unix_systime(void)
 uint16_t get_taskname(struct task_struct *task, char *name_buffer,
 		      uint16_t buffer_size)
 {
-	uint16_t retVal = 0;
+	char buf[TASK_COMM_LEN] = {0};
 
 	if (NULL == task || NULL == name_buffer || 0 == buffer_size
 	    || buffer_size <= TASK_COMM_LEN) {
 		TRACE(ERROR, LOG("Invalid parameters"));
-		return retVal;
+		return 0;
 	}
-	get_task_comm(name_buffer, task);
-	if ('\0' == name_buffer[0])
-		retVal = snprintf(name_buffer, (buffer_size - 1), default_name);
-	else
-		retVal = strlen(name_buffer);
-
-	return retVal;
+	get_task_comm(buf, task);
+	snprintf(name_buffer, buffer_size, "%s", ('\0' == buf[0] ? default_name : buf));
+	return strlen(name_buffer);
 }
 
 /**
