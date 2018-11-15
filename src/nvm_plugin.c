@@ -211,7 +211,7 @@ static void send_pending_flows(void *context)
 	struct llist *iter = NULL;
 	void *iter_data = NULL;
 	error_code status;
-	struct app_flow *flow = NULL;
+	struct nvm_message_header *nvm_header = NULL;
 
 	mutex_lock(&g_nvm_plugin.mutex_send_lock);
 	while (true) {
@@ -224,18 +224,18 @@ static void send_pending_flows(void *context)
 		if (!iter_data)
 			break;
 
-		flow = (struct app_flow *)iter_data;
+		nvm_header = (struct nvm_message_header *)iter_data;
 		status =
-		    socket_sendto(g_nvm_plugin.pSocket,
-				  &g_nvm_plugin.exporter_address,
-				  (uint8_t *) flow, sizeof(struct app_flow));
+			socket_sendto(g_nvm_plugin.pSocket,
+					&g_nvm_plugin.exporter_address,
+					(uint8_t *) iter_data, nvm_header->length);
 		if (SUCCESS != status) {
 			TRACE(ERROR,
-			      LOG("Failed to send flow. Error = %d", status));
+					LOG("Failed to send flow. Error = %d", status));
 		}
 		/* Delete the flow */
 		list_delete(g_nvm_plugin.send_list, iter);
-		KFREE(flow);
+		KFREE(iter_data);
 	}
 	mutex_unlock(&g_nvm_plugin.mutex_send_lock);
 }
@@ -342,6 +342,20 @@ static bool are_udp_flows_similar(const struct app_flow *new_flow,
 	return false;
 }
 
+/**
+ * \brief extract the base portion of a pathname
+ * \description
+ *
+ * \param[in] pathname of the process
+ *
+ * \return base portion of the path
+*/
+static inline const char *file_name_from_path(const char *path)
+{
+	const char *p = strrchr (path, '/');
+	return p ? p + 1 : path;
+}
+
 /*
 *   \brief Method to get process information from the flow
 */
@@ -349,6 +363,8 @@ static void get_task_details(struct app_flow *flow)
 {
 	struct task_struct *curr = NULL;
 	struct task_struct *parent = NULL;
+	const char *process_name = NULL;
+	const char *parent_process_name = NULL;
 
 	if (NULL == flow)
 		return;
@@ -359,8 +375,19 @@ static void get_task_details(struct app_flow *flow)
 	if (NULL == curr)
 		return;
 
-	flow->file_name_len =
-	    get_taskname(curr, flow->file_name, ARRAY_SIZE(flow->file_name));
+	flow->file_path_len =
+		get_exepath_from_task(curr, flow->file_path, ARRAY_SIZE(flow->file_path));
+
+	process_name = file_name_from_path(flow->file_path);
+
+	if (process_name && strcmp(process_name, default_name)) {
+		strlcpy(flow->file_name, process_name, sizeof(flow->file_name));
+		flow->file_name_len = strlen(flow->file_name);
+	}
+	else {
+		flow->file_name_len =
+			get_taskname(curr, flow->file_name, ARRAY_SIZE(flow->file_name));
+	}
 
 	parent = get_parent(curr);
 	unref_task(curr);
@@ -368,9 +395,20 @@ static void get_task_details(struct app_flow *flow)
 		return;
 
 	flow->parent_pid = get_pid_of_task(parent);
-	flow->parent_file_name_len =
-	    get_taskname(parent, flow->parent_file_name,
-			 ARRAY_SIZE(flow->parent_file_name));
+	flow->parent_file_path_len =
+		get_exepath_from_task(parent, flow->parent_file_path,
+			ARRAY_SIZE(flow->parent_file_path));
+	parent_process_name = file_name_from_path(flow->parent_file_path);
+
+	if (parent_process_name && strcmp(parent_process_name, default_name)) {
+		strlcpy(flow->parent_file_name, parent_process_name, sizeof(flow->parent_file_name));
+		flow->parent_file_name_len = strlen(flow->parent_file_name);
+	}
+	else {
+		flow->parent_file_name_len =
+			get_taskname(parent, flow->parent_file_name,
+				ARRAY_SIZE(flow->parent_file_name));
+	}
 	unref_task(parent);
 }
 
@@ -413,6 +451,7 @@ static bool create_flow_from_pkt(struct nwk_packet_info *packet_info,
 	flow->proto = packet_info->l3.proto;
 
 	flow->start_time = packet_info->start_time;
+	track->connected = false;
 	track->last_timestamp = flow->start_time;
 
 	switch (packet_info->edirection) {
@@ -512,6 +551,50 @@ static bool report_flow(struct app_flow *app_flow)
 }
 
 /*
+ * \brief private method to report pid_info
+ */
+static bool process_new_pid_info(struct app_flow *flow)
+{
+	struct nvm_pid_info *pid_info = NULL;
+
+	if (NULL == flow)
+		return false;
+
+	if (0 == flow->pid)
+		return false;
+
+	pid_info = KMALLOC(sizeof(struct nvm_pid_info));
+	if (NULL == pid_info) {
+		TRACE(ERROR, LOG("Failed to allocate pid_info"));
+		return false;
+	}
+	// Copy the appflow's process info into the pid_info
+	pid_info->pid = flow->pid;
+	pid_info->file_name_len = flow->file_name_len;
+	memcpy( pid_info->file_name,flow->file_name, ARRAY_SIZE(pid_info->file_name) );
+
+	pid_info->file_path_len = flow->file_path_len;
+	memcpy( pid_info->file_path,flow->file_path, ARRAY_SIZE(pid_info->file_path) );
+
+	pid_info->parent_pid = flow->parent_pid;
+	pid_info->parent_file_name_len = flow->parent_file_name_len;
+	memcpy( pid_info->parent_file_name,flow->parent_file_name, ARRAY_SIZE(pid_info->parent_file_name) );
+
+	pid_info->parent_file_path_len = flow->parent_file_path_len;
+	memcpy( pid_info->parent_file_path,flow->parent_file_path, ARRAY_SIZE(pid_info->parent_file_path) );
+	pid_info->header.type = NVM_MESSAGE_PID_INFO;
+	pid_info->header.version = NVM_APPFLOW_VERSION;
+	pid_info->header.length = sizeof(struct nvm_pid_info);
+	/* Send the pidinfo */
+	mutex_lock(&g_nvm_plugin.mutex_send_lock);
+	list_insert(g_nvm_plugin.send_list, pid_info, false);
+	schedule_work_on_queue(&g_nvm_plugin.send_work);
+	mutex_unlock(&g_nvm_plugin.mutex_send_lock);
+
+	return true;
+}
+
+/*
 *   \brief This method process an incoming tcp packet
 *          and checks if its part of a flow.
 *          It also sends out completed flows.
@@ -551,6 +634,25 @@ static void process_tcp_flow(struct nwk_packet_info *untracked)
 			KFREE(track->flow);
 			KFREE(track);
 
+			/* Check if TCP connection is established*/
+			if (!track_old->connected
+			    && IS_SET(track_old->sent_flags, FLAG_SYN)
+			    && IS_SET(track_old->sent_flags, FLAG_ACK)
+			    && IS_SET(track_old->recv_flags, FLAG_SYN)
+			    && IS_SET(track_old->recv_flags, FLAG_ACK)) {
+				track_old->connected = true;
+				/* Send OnFlowStart for newly established tcp connections.*/
+				process_new_pid_info(track_old->flow);
+				/* Start of a new flow -
+				 * if TCP connection is established and
+				 * configured to report on flow start
+				 * submit the flow data. */
+				if (g_nvm_plugin.flow_report_interval >= 0) {
+					track_old->flow->stage = e_FLOW_REPORT_STAGE_START;
+					report_flow(track_old->flow);
+				}
+			}
+
 			/*
 			 * Both sides send a FIN, or either side sends a RST
 			 */
@@ -559,19 +661,22 @@ static void process_tcp_flow(struct nwk_packet_info *untracked)
 			    || IS_SET(track_old->sent_flags, FLAG_RST)
 			    || IS_SET(track_old->recv_flags, FLAG_RST)) {
 
-				track_old->flow->end_time = get_unix_systime();
-				track_old->flow->stage =
-				    e_FLOW_REPORT_STAGE_END;
-				mutex_lock(&g_nvm_plugin.mutex_send_lock);
-				list_insert(g_nvm_plugin.send_list,
-					    track_old->flow, false);
-				schedule_work_on_queue(&g_nvm_plugin.send_work);
-				mutex_unlock(&g_nvm_plugin.mutex_send_lock);
-
-				/*
-				 * Delete the track as it has been sent now
-				 * don't KFREE the actual Flow.
-				 * The sender task will need it
+				/* TCP connection is established, send the flow.*/
+				if (track_old->connected) {
+					track_old->flow->end_time = get_unix_systime();
+					track_old->flow->stage =
+							e_FLOW_REPORT_STAGE_END;
+					mutex_lock(&g_nvm_plugin.mutex_send_lock);
+					list_insert(g_nvm_plugin.send_list,
+							track_old->flow, false);
+					schedule_work_on_queue(&g_nvm_plugin.send_work);
+					mutex_unlock(&g_nvm_plugin.mutex_send_lock);
+				} else {
+					KFREE(track_old->flow);
+				}
+				/* Delete the track as it has been sent/cleaned now.
+				 * don't KFREE the actuall flow here.
+				 * The sender task will need it.
 				 */
 				hlist_del(itr);
 				KFREE(track_old);
@@ -583,18 +688,24 @@ static void process_tcp_flow(struct nwk_packet_info *untracked)
 
 	if (new_packet) {
 		/* No related flows for this packet being tracked till now.
-		   Hence add this packet only if its a SYN */
-		if (IS_SET(track->sent_flags, FLAG_SYN)
-		    || IS_SET(track->recv_flags, FLAG_SYN)) {
+		   Hence add this packet only if direction is outbound and
+		   sent flag has either SYN bit set or SYN & ACK bit set.
+		   Reason for adding this check is to avoid incoming
+		   SYN flood scenario. */
+		if ((NVM_FLOW_DIRECTION_OUT == track->flow->direction)
+		    && IS_SET(track->sent_flags, FLAG_SYN)) {
+
+			if(IS_SET(track->sent_flags, FLAG_ACK)) {
+				/* This is the response of incoming SYN.
+				 * It is not the start of flow.
+				 * Adding SYN flag & changing the direction
+				 * to denote the actuall traffic which was inbound.*/
+				track->recv_flags |= FLAG_SYN;
+				track->flow->direction = NVM_FLOW_DIRECTION_IN;
+			}
 			get_task_details(track->flow);
 			hlist_add(g_nvm_plugin.tcp_flows, track,
-				  track->flow->local.Ipv4.sin_port);
-			/* Start of a new flow -
-			submit flow data if configured to report on flow start*/
-			if (g_nvm_plugin.flow_report_interval >= 0) {
-				track->flow->stage = e_FLOW_REPORT_STAGE_START;
-				report_flow(track->flow);
-			}
+					track->flow->local.Ipv4.sin_port);
 		} else {
 			KFREE(track->flow);
 			KFREE(track);
@@ -686,6 +797,7 @@ static void process_udp_flow(struct nwk_packet_info *untracked)
 	if (new_packet) {
 		/* this is a new flow */
 		get_task_details(track->flow);
+		process_new_pid_info(track->flow);
 		hlist_add(g_nvm_plugin.udp_flows, track,
 			  track->flow->local.Ipv4.sin_port);
 		/* Start of a new flow -
@@ -763,13 +875,17 @@ static void cleanup(void *context)
 		track = (struct TrackAppFlow *)itr->data;
 		curr = get_task_from_pid(track->flow->pid);
 		if ((0 != track->flow->pid) && (NULL == curr)) {
-			track->flow->end_time = get_unix_systime();
-			track->flow->stage = e_FLOW_REPORT_STAGE_END;
-			/* Send the flow */
-			mutex_lock(&g_nvm_plugin.mutex_send_lock);
-			list_insert(g_nvm_plugin.send_list, track->flow, false);
-			schedule_work_on_queue(&g_nvm_plugin.send_work);
-			mutex_unlock(&g_nvm_plugin.mutex_send_lock);
+			/* Send the flow only if TCP connection is established.*/
+			if (track->connected) {
+				track->flow->end_time = get_unix_systime();
+				track->flow->stage = e_FLOW_REPORT_STAGE_END;
+				mutex_lock(&g_nvm_plugin.mutex_send_lock);
+				list_insert(g_nvm_plugin.send_list, track->flow, false);
+				schedule_work_on_queue(&g_nvm_plugin.send_work);
+				mutex_unlock(&g_nvm_plugin.mutex_send_lock);
+			} else {
+				KFREE(track->flow);
+			}
 
 			/* erase this entry */
 			hlist_del(itr);
@@ -779,25 +895,31 @@ static void cleanup(void *context)
 		} else if ((get_unix_systime() - track->last_timestamp) >=
 			   TCP_FLOW_TIMEOUT_SECS) {
 			unref_task(curr);
-			if (!(IS_SET(track->sent_flags, FLAG_FIN)
-			     || IS_SET(track->recv_flags, FLAG_FIN)
-			    || IS_SET(track->sent_flags, FLAG_RST)
-			    || IS_SET(track->recv_flags, FLAG_RST))) {
-				/* If the TCP flow is still active, skip*/
-				continue;
+			if(track->connected) {
+				if (!(IS_SET(track->sent_flags, FLAG_FIN)
+				     || IS_SET(track->recv_flags, FLAG_FIN)
+				   || IS_SET(track->sent_flags, FLAG_RST)
+				   || IS_SET(track->recv_flags, FLAG_RST))) {
+					/* If the TCP flow is still active, skip*/
+					continue;
+				}
+				track->flow->end_time = get_unix_systime();
+				track->flow->stage = e_FLOW_REPORT_STAGE_END;
+				/* Send the flow */
+				mutex_lock(&g_nvm_plugin.mutex_send_lock);
+				list_insert(g_nvm_plugin.send_list, track->flow, false);
+				schedule_work_on_queue(&g_nvm_plugin.send_work);
+				mutex_unlock(&g_nvm_plugin.mutex_send_lock);
+			} else {
+				KFREE(track->flow);
 			}
-			track->flow->end_time = get_unix_systime();
-			track->flow->stage = e_FLOW_REPORT_STAGE_END;
-			/* Send the flow */
-			mutex_lock(&g_nvm_plugin.mutex_send_lock);
-			list_insert(g_nvm_plugin.send_list, track->flow, false);
-			schedule_work_on_queue(&g_nvm_plugin.send_work);
-			mutex_unlock(&g_nvm_plugin.mutex_send_lock);
-
 			/* erase this entry */
 			hlist_del(itr);
-			/* Don't KFREE flow.
-			It will be deleted by the sender task */
+
+			/* Delete the track, as it has been sent/cleaned now.
+			 * Don't KFREE flow here.
+			 * It will be deleted by the sender task.
+			 */
 			KFREE(track);
 		} else {
 			unref_task(curr);
@@ -869,7 +991,9 @@ static void send_periodic_flows(void *context)
 
 	for_each_hlist(g_nvm_plugin.tcp_flows, hash_bkt, tmp, itr, next) {
 		track = (struct TrackAppFlow *)itr->data;
-		if ((curr_time - track->flow->end_time) >=
+		/* Send the flow only if TCP connection is established.*/
+		if (track->connected
+		    && (curr_time - track->flow->end_time) >=
 		    g_nvm_plugin.flow_report_interval) {
 			track->flow->stage = e_FLOW_REPORT_STAGE_PERIODIC;
 			report_flow(track->flow);

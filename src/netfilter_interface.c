@@ -75,7 +75,11 @@ error_code register_ip_hooks(void)
 	for (counter = 0; counter < total_hooks; ++counter)
 		ip_hooks[counter].hook = hook_callback;
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0))
+	hook_stat = nf_register_net_hooks(&init_net, ip_hooks, total_hooks);
+#else
 	hook_stat = nf_register_hooks(ip_hooks, total_hooks);
+#endif
 	if (0 != hook_stat) {
 		TRACE(ERROR,
 		      LOG("failed to register hooks error: %d", hook_stat));
@@ -89,7 +93,11 @@ error_code register_ip_hooks(void)
 */
 error_code deregister_ip_hooks(void)
 {
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0))
+	nf_unregister_net_hooks(&init_net, ip_hooks, ARRAY_SIZE(ip_hooks));
+#else
 	nf_unregister_hooks(ip_hooks, ARRAY_SIZE(ip_hooks));
+#endif
 	return SUCCESS;
 }
 

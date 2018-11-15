@@ -50,6 +50,7 @@ struct TrackAppFlow {
 	uint8_t sent_flags;	/* a bitset of all TCP flags sent. */
 	uint8_t recv_flags;	/* similar to sent_flags, just received. */
 	bool finished;		/* Marks a tracking object for disposal. */
+	bool connected;		/* True if TCP connection is established.*/
 	/* timestamp for the last packet tracked for this flow */
 	uint32_t last_timestamp;
 };
